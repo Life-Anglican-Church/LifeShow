@@ -161,10 +161,40 @@ document.querySelector("#logo-action").addEventListener("click", () => {
   state.logo = true;
   render();
 });
-panel.addEventListener("click", event => {
+const actionDialog = document.querySelector("#action-confirmation");
+actionDialog.addEventListener("click", event => {
+  const button = event.target.closest("button[value]");
+  if (button) actionDialog.close(button.value);
+});
+const actionVerbs = {
+  macro: "Run", prop: "Change", "show-prop": "Show", "clear-prop": "Clear",
+  look: "Apply", layout: "Set stage layout to"
+};
+
+function confirmAction(message) {
+  if (actionDialog.open) return Promise.resolve(false);
+  actionDialog.querySelector("#action-message").textContent = message;
+  actionDialog.returnValue = "";
+  actionDialog.showModal();
+  return new Promise(resolve => actionDialog.addEventListener("close", () => {
+    resolve(actionDialog.returnValue === "confirm");
+  }, { once: true }));
+}
+
+panel.addEventListener("click", async event => {
   const button = event.target.closest("button[data-action]");
-  if (!button) return;
+  if (!button || button.disabled) return;
   const { action, value } = button.dataset;
+  if (Object.prototype.hasOwnProperty.call(actionVerbs, action)) {
+    const label = [...(button.querySelector("span") || button).childNodes]
+      .filter(node => node.nodeType === Node.TEXT_NODE).map(node => node.textContent).join("").trim();
+    const context = window.connection?.actionContext();
+    const tab = state.tab;
+    const verb = action === "prop" ? (state.props.has(value) ? "Clear" : "Show") : actionVerbs[action];
+    if (!await confirmAction(`${verb} ${label}?`)) return;
+    const current = window.connection?.actionContext();
+    if (tab !== state.tab || document.hidden || current?.[0] !== context?.[0] || current?.[1] !== context?.[1]) return;
+  }
   if (window.connection?.panelAction(action, value)) return;
   switch (action) {
     case "browse": state.browsing = Number(value); break;

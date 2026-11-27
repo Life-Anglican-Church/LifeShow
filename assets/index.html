@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="style.css">
 <script defer src="app.js"></script>
 <script defer src="connection.js"></script>
+<script defer src="updates.js"></script>
 </head>
 <body>
 <div class="shell">
@@ -20,6 +21,7 @@
     </div>
   </header>
   <div class="cue-area">
+    <div id="update-banner" hidden><span id="update-text"></span><button id="view-update">View</button><button id="dismiss-update" aria-label="Dismiss update">✕</button></div>
     <div id="connection-status" role="status" hidden></div>
     <div class="cue">
       <span id="cue-label">Current cue · Demo</span>
@@ -34,6 +36,14 @@
     <nav aria-label="Show controls" id="nav"></nav>
   </footer>
 </div>
+<dialog id="action-confirmation" aria-labelledby="action-title" aria-describedby="action-message">
+  <h2 id="action-title">Confirm action</h2>
+  <p id="action-message"></p>
+  <div class="confirmation-actions">
+    <button type="button" value="cancel" autofocus>Cancel</button>
+    <button type="button" value="confirm">Confirm</button>
+  </div>
+</dialog>
 <div id="feedback" role="status" aria-live="polite"></div>
 </body>
 </html>

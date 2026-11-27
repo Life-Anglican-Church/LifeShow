@@ -135,3 +135,11 @@ nav button[aria-current="page"] { color: #ffe0a9; background: #432919; border-co
 .slide-grid .card > span:first-child { min-width: 0; }
 .slide-grid .card:disabled { opacity: 1; cursor: default; }
 .slide-grid .card:disabled:not(.live-slide) { border-color: var(--border); }
+
+#action-confirmation { width: min(340px, calc(100% - 32px)); color: #fff3e5; background: #261a13; border: 1px solid #845831; border-radius: 14px; padding: 18px; }
+#action-confirmation::backdrop { background: rgba(0, 0, 0, .68); }
+#action-confirmation .confirmation-actions { display: flex; justify-content: flex-end; gap: 8px; }
+#action-confirmation button, #update-banner button { min-height: 44px; border: 1px solid #845831; background: #3a281c; color: #fff3e5; border-radius: 8px; padding: 5px 12px; }
+#action-confirmation button[value=confirm] { background: var(--accent); color: #251509; }
+#update-banner:not([hidden]) { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+#update-banner span { flex: 1; }

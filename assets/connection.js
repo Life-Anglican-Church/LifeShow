@@ -128,6 +128,14 @@
     return { active, cursor, slide };
   }
 
+  function presentationFingerprint(data) {
+    const item = data.active.playlist_item || data.active.item;
+    return JSON.stringify([
+      uuid(data.active.playlist), itemKey(item), uuid(data.cursor?.presentation_id),
+      item?.presentation_info?.arrangement_uuid, item?.presentation_info?.arrangement_name
+    ]);
+  }
+
   function fingerprint(data) {
     return JSON.stringify([
       uuid(data.active.playlist), itemKey(data.active.playlist_item || data.active.item),
@@ -229,7 +237,9 @@
 
     let response = active ? await optional(s, "/v1/presentation/active") : null;
     let presentation = response?.presentation ?? response;
+    let fromActive = active;
     if (!Array.isArray(presentation?.groups) || (uuid(presentation) && !sameUuid(uuid(presentation), target))) {
+      fromActive = false;
       response = await optional(s, "/v1/presentation/" + part(target));
       presentation = response?.presentation ?? response;
     }
@@ -246,13 +256,16 @@
       sameUuid(uuid(entry), arrangementId) || (!arrangementId && arrangementName && name(entry) === arrangementName));
     const ordered = list(arrangement?.groups).map(groupId => groups.find(group => sameUuid(uuid(group), groupId)));
     const useArrangement = ordered.length > 0 && ordered.every(Boolean);
+    const master = (!arrangementId && !arrangementName) || String(arrangementName || "").trim().toLowerCase() === "master";
+    const nativeOrder = fromActive && !list(presentation.arrangements).length
+      && !list(groups).some(group => list(group.slides).length === 0);
     const slides = (useArrangement ? ordered : groups).flatMap(group => list(group.slides).filter(Boolean).map(slide => ({
       enabled: slide.enabled !== false, title: slide.label || group.name || showTitle(slide.text) || "Slide",
       preview: showTitle(slide.text)
     }))).map((slide, index) => ({ ...slide, index }));
     s.slideStatus.set(itemKey(item), slides.length ? "" : "No slides were returned for this item.");
     s.slides.set(key, { at: performance.now(), presentationId: uuid(presentation) || target,
-      arrangementId, arrangementName, slides, safeOrder: useArrangement || (!arrangementId && !arrangementName) });
+      arrangementId, arrangementName, slides, safeOrder: useArrangement || master || nativeOrder });
   }
 
   async function refreshTab(s) {
@@ -292,7 +305,8 @@
     s.busy = true;
     s.logoPending = remoteLogo;
     s.notice = "";
-    const expected = fingerprint(s.data);
+    const compare = verify === "presentation" ? presentationFingerprint : fingerprint;
+    const expected = compare(s.data);
     const targetPlaylist = s.playlistId;
     const arm = s.armGeneration;
     let dispatched = false;
@@ -308,7 +322,7 @@
           sameItem = Boolean(item) && itemKey(item) === itemKey(playlistItem) && !item.is_hidden;
         }
         if (!currentSession(s) || arm !== s.armGeneration || !s.live || document.hidden) return;
-        if (fingerprint(latest) !== expected || !sameItem) {
+        if (compare(latest) !== expected || !sameItem) {
           s.awaitingSync = true;
           s.notice = "Cue or playlist changed · review it and tap again.";
           return;
@@ -587,6 +601,9 @@
       if (session.remotePassword) send(session, null, false, null, true);
       return true;
     },
+    actionContext() {
+      return session ? [session, session.armGeneration] : null;
+    },
     panelAction(action, value) {
       const s = session;
       if (!s) return settingsOpen;
@@ -615,9 +632,18 @@
         const active = activeRow(s);
         const cached = activeSlideSet(s, active);
         if (active && s.browsing === itemKey(active) && cached?.safeOrder && cached.slides[index]?.enabled) {
-          send(s, "/v1/presentation/active/" + index + "/trigger", true);
+          send(s, "/v1/presentation/active/" + index + "/trigger", "presentation");
         }
-      } else if (Object.prototype.hasOwnProperty.call(endpoints, action)) send(s, endpoints[action]);
+      } else if (Object.prototype.hasOwnProperty.call(endpoints, action)) {
+        if (action === "show-prop" || action === "clear-prop") {
+          const prop = named(s.info.props).find(entry => uuid(entry) === value);
+          if (!prop || prop.is_active !== (action === "clear-prop")) {
+            announce("Prop state changed. Review it and tap again.");
+            return true;
+          }
+        }
+        send(s, endpoints[action]);
+      }
       return true;
     }
   };
