@@ -1,9 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.showremote.demo" android:versionCode="8" android:versionName="0.7-beta">
+    package="com.showremote.demo" android:versionCode="9" android:versionName="0.8-beta">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <application android:label="LifeSHOW" android:icon="@drawable/lifeshow_icon" android:usesCleartextTraffic="true" android:theme="@android:style/Theme.Material.NoActionBar"
         android:allowBackup="false">
+        <provider android:name=".UpdateFileProvider" android:authorities="com.showremote.demo.updates"
+            android:exported="false" android:grantUriPermissions="true" />
         <activity android:name=".MainActivity" android:exported="true"
             android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter>

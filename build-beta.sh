@@ -14,7 +14,7 @@ trap 'rm -rf "$build"' EXIT
 bt=$ANDROID_BUILD_TOOLS
 mkdir -p "$build/classes" "$build/dex" "$(dirname "$out")"
 java -jar "$ECJ_JAR" -proc:none -source 8 -target 8 \
-  -classpath "$ANDROID_JAR:$OKHTTP_JAR:$OKIO_JAR" -d "$build/classes" src/MainActivity.java
+  -classpath "$ANDROID_JAR:$OKHTTP_JAR:$OKIO_JAR" -d "$build/classes" src/*.java
 (cd "$build/classes" && zip -q -r "$build/classes.jar" .)
 "$bt/d8" --lib "$ANDROID_JAR" --min-api 26 --output "$build/dex" \
   "$build/classes.jar" "$OKHTTP_JAR" "$OKIO_JAR"
