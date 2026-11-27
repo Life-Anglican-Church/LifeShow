@@ -5,6 +5,7 @@
   const logo = document.querySelector("#logo-action");
   const pending = new Map();
   const freshFor = 4500;
+  const liveGrace = 8000;
   let requestId = 0;
   let session = null;
   let settingsOpen = false;
@@ -32,9 +33,43 @@
   const equalId = (a, b) => Boolean(uuid(a)) && uuid(a).toLowerCase() === uuid(b).toLowerCase();
   const currentSession = s => session === s;
   const isFresh = s => Boolean(s.data) && performance.now() - s.verified < freshFor;
-  const canSend = s => s.live && !s.busy && !s.awaitingSync && !document.hidden && !settingsOpen && isFresh(s);
+  const canSend = s => s.live && !s.busy && !s.awaitingSync && !document.hidden && !settingsOpen && !s.error && isFresh(s);
   const itemKey = item => uuid(item) || String(id(item)?.index ?? "");
-  const itemTarget = item => item?.presentation_info?.presentation_uuid || item?.target_uuid || uuid(item);
+  const explicitTarget = item => item?.presentation_info?.presentation_uuid || item?.target_uuid;
+  const itemTarget = item => explicitTarget(item) || uuid(item);
+  const sameUuid = (a, b) => Boolean(a && b) && String(a).toLowerCase() === String(b).toLowerCase();
+
+  function activeRow(s) {
+    const active = s.data?.active;
+    if (!s.playlistId || !sameUuid(s.playlistId, uuid(active?.playlist))) return null;
+    const reported = active.playlist_item?.id || active.item;
+    const activeUuid = uuid(s.data?.cursor?.presentation_id);
+    const candidates = s.items.filter(item => item.type !== "presentation" || !activeUuid
+      || !explicitTarget(item) || sameUuid(explicitTarget(item), activeUuid));
+    const byId = candidates.find(item => sameUuid(uuid(item), uuid(reported)));
+    if (byId) return byId;
+    const byIndex = candidates.find(item => Number.isInteger(id(reported)?.index)
+      && id(item)?.index === id(reported).index && name(item) && name(item) === name(reported));
+    if (byIndex) return byIndex;
+    const byTarget = candidates.filter(item => item.type === "presentation"
+      && sameUuid(itemTarget(item), activeUuid) && (!name(reported) || name(item) === name(reported)));
+    if (byTarget.length === 1) return byTarget[0];
+    const activeName = name(reported) || name(s.data?.cursor?.presentation_id);
+    if (!activeUuid || !activeName) return null;
+    const byName = candidates.filter(item => item.type === "presentation" && name(item) === activeName);
+    return byName.length === 1 ? byName[0] : null;
+  }
+
+  function activeSlideSet(s, item) {
+    if (!item || activeRow(s) !== item) return null;
+    const activeId = uuid(s.data?.cursor?.presentation_id);
+    const cached = s.slides.get("active:" + itemKey(item));
+    if (!cached || !sameUuid(cached.presentationId, activeId)) return null;
+    const info = s.data.active.playlist_item?.presentation_info || item.presentation_info;
+    if (cached.arrangementId !== info?.arrangement_uuid || cached.arrangementName !== info?.arrangement_name) return null;
+    return cached;
+  }
+
   const showTitle = text => String(text || "").split(/\r?\n/).find(line => line.trim())?.trim() || "";
 
   window.receiveLifeShow = (number, code, body) => {
@@ -93,9 +128,18 @@
     return { active, cursor, slide };
   }
 
+  function presentationFingerprint(data) {
+    const item = data.active.playlist_item || data.active.item;
+    return JSON.stringify([
+      uuid(data.active.playlist), itemKey(item), uuid(data.cursor?.presentation_id),
+      item?.presentation_info?.arrangement_uuid, item?.presentation_info?.arrangement_name
+    ]);
+  }
+
   function fingerprint(data) {
     return JSON.stringify([
-      uuid(data.active.playlist), itemKey(data.active.item), uuid(data.cursor?.presentation_id),
+      uuid(data.active.playlist), itemKey(data.active.playlist_item || data.active.item),
+      data.active.playlist_item?.presentation_info?.arrangement_uuid, uuid(data.cursor?.presentation_id),
       data.cursor?.index ?? null, data.slide?.current?.uuid ?? null, data.slide?.current?.text ?? null,
       data.slide?.next?.uuid ?? null, data.slide?.next?.text ?? null
     ]);
@@ -129,9 +173,7 @@
       await Promise.all([refreshTab(s), refreshSlides(s), refreshCatalog(s)]);
     } catch (error) {
       if (currentSession(s)) {
-        disarm(s);
-        s.verified = -Infinity;
-        s.error = "Connection lost · " + error.message;
+        s.error = "Status check failed · " + error.message;
       }
     } finally {
       s.polling = false;
@@ -156,6 +198,7 @@
       s.items = [];
       s.browsing = null;
       s.slides.clear();
+      s.slideStatus.clear();
       s.playlistAt = 0;
     }
     if (!playlistId || (s.playlistAt && performance.now() - s.playlistAt < 5500)) return;
@@ -164,9 +207,7 @@
     s.items = list(detail?.items).filter(item => !item.is_hidden && item.id);
     s.playlistAt = detail ? performance.now() : 0;
     if (!s.items.some(item => itemKey(item) === s.browsing)) {
-      const activeKey = playlistId === uuid(s.data?.active.playlist) ? itemKey(s.data?.active.item) : "";
-      const preferred = s.items.find(item => activeKey && itemKey(item) === activeKey)
-        || s.items.find(item => item.type === "presentation");
+      const preferred = activeRow(s) || s.items.find(item => item.type === "presentation");
       s.browsing = preferred ? itemKey(preferred) : null;
     }
   }
@@ -179,27 +220,52 @@
   async function refreshSlides(s) {
     if (state.tab !== "Playlist") return;
     const item = s.items.find(entry => itemKey(entry) === s.browsing);
-    const target = itemTarget(item);
-    if (!target || item.type !== "presentation") return;
-    const activePresentation = uuid(s.data?.cursor?.presentation_id);
+    if (item?.type !== "presentation") return;
     const playlistId = s.playlistId;
-    const active = playlistId === uuid(s.data?.active.playlist) && itemKey(s.data?.active.item) === itemKey(item)
-      && (!activePresentation || activePresentation.toLowerCase() === String(target).toLowerCase());
+    const active = activeRow(s) === item;
+    const cursorId = uuid(s.data?.cursor?.presentation_id);
+    const target = active && cursorId ? cursorId : itemTarget(item);
+    if (!target) return;
+
+    const info = (active ? s.data.active.playlist_item?.presentation_info : null) || item.presentation_info;
+    const arrangementId = info?.arrangement_uuid;
+    const arrangementName = info?.arrangement_name;
     const key = (active ? "active:" : "browse:") + itemKey(item);
     const cached = s.slides.get(key);
-    if (cached && performance.now() - cached.at < 5000) return;
-    const data = await optional(s, active ? "/v1/presentation/active" : "/v1/presentation/" + part(target));
-    if (!currentSession(s) || s.busy || s.playlistId !== playlistId) return;
-    const presentation = active ? data?.presentation : data;
-    if (presentation && Array.isArray(presentation.groups)) {
-      let index = 0;
-      const slides = presentation.groups.flatMap(group => list(group.slides).map(slide => {
-        const cueIndex = index++;
-        return { index: cueIndex, enabled: slide.enabled !== false, title: slide.label || group.name || showTitle(slide.text) || "Slide " + (cueIndex + 1), preview: showTitle(slide.text) };
-      }));
-      const valid = !active || !uuid(presentation) || uuid(presentation).toLowerCase() === String(target).toLowerCase();
-      if (valid) s.slides.set(key, { at: performance.now(), slides });
+    if (cached && sameUuid(cached.presentationId, target) && cached.arrangementId === arrangementId
+        && cached.arrangementName === arrangementName && performance.now() - cached.at < 5000) return;
+
+    let response = active ? await optional(s, "/v1/presentation/active") : null;
+    let presentation = response?.presentation ?? response;
+    let fromActive = active;
+    if (!Array.isArray(presentation?.groups) || (uuid(presentation) && !sameUuid(uuid(presentation), target))) {
+      fromActive = false;
+      response = await optional(s, "/v1/presentation/" + part(target));
+      presentation = response?.presentation ?? response;
     }
+    if (!currentSession(s) || s.busy || s.playlistId !== playlistId
+        || (active && (!sameUuid(cursorId, uuid(s.data?.cursor?.presentation_id))
+          || itemKey(activeRow(s)) !== itemKey(item)))) return;
+    if (!Array.isArray(presentation?.groups) || (uuid(presentation) && !sameUuid(uuid(presentation), target))) {
+      s.slides.delete(key);
+      s.slideStatus.set(itemKey(item), "ProPresenter did not return slides for this item.");
+      return;
+    }
+    const groups = presentation.groups;
+    const arrangement = list(presentation.arrangements).find(entry =>
+      sameUuid(uuid(entry), arrangementId) || (!arrangementId && arrangementName && name(entry) === arrangementName));
+    const ordered = list(arrangement?.groups).map(groupId => groups.find(group => sameUuid(uuid(group), groupId)));
+    const useArrangement = ordered.length > 0 && ordered.every(Boolean);
+    const master = (!arrangementId && !arrangementName) || String(arrangementName || "").trim().toLowerCase() === "master";
+    const nativeOrder = fromActive && !list(presentation.arrangements).length
+      && !list(groups).some(group => list(group.slides).length === 0);
+    const slides = (useArrangement ? ordered : groups).flatMap(group => list(group.slides).filter(Boolean).map(slide => ({
+      enabled: slide.enabled !== false, title: slide.label || group.name || showTitle(slide.text) || "Slide",
+      preview: showTitle(slide.text)
+    }))).map((slide, index) => ({ ...slide, index }));
+    s.slideStatus.set(itemKey(item), slides.length ? "" : "No slides were returned for this item.");
+    s.slides.set(key, { at: performance.now(), presentationId: uuid(presentation) || target,
+      arrangementId, arrangementName, slides, safeOrder: useArrangement || master || nativeOrder });
   }
 
   async function refreshTab(s) {
@@ -239,7 +305,8 @@
     s.busy = true;
     s.logoPending = remoteLogo;
     s.notice = "";
-    const expected = fingerprint(s.data);
+    const compare = verify === "presentation" ? presentationFingerprint : fingerprint;
+    const expected = compare(s.data);
     const targetPlaylist = s.playlistId;
     const arm = s.armGeneration;
     let dispatched = false;
@@ -255,9 +322,9 @@
           sameItem = Boolean(item) && itemKey(item) === itemKey(playlistItem) && !item.is_hidden;
         }
         if (!currentSession(s) || arm !== s.armGeneration || !s.live || document.hidden) return;
-        if (fingerprint(latest) !== expected || !sameItem) {
-          disarm(s);
-          s.notice = "Cue changed at the booth or playlist was edited · check Monitor before enabling Live.";
+        if (compare(latest) !== expected || !sameItem) {
+          s.awaitingSync = true;
+          s.notice = "Cue or playlist changed · review it and tap again.";
           return;
         }
       }
@@ -270,11 +337,13 @@
       }
     } catch (error) {
       if (currentSession(s)) {
-        disarm(s);
-        s.verified = -Infinity;
-        s.notice = error.beforeSend ? error.message : dispatched
-          ? "Command outcome uncertain · check the booth before trying again."
-          : "Could not verify the current cue · check the connection.";
+        if (dispatched) {
+          disarm(s);
+          s.verified = -Infinity;
+          s.notice = error.beforeSend ? error.message : "Command outcome uncertain · check the booth before trying again.";
+        } else {
+          s.error = "Cue check failed · refreshing from ProPresenter.";
+        }
       }
     } finally {
       if (currentSession(s)) {
@@ -296,11 +365,14 @@
     status.hidden = !s;
     if (!s) return;
     const fresh = isFresh(s);
-    if (!fresh && s.live && !s.busy) disarm(s);
+    if (s.live && !s.busy && performance.now() - s.verified >= liveGrace) {
+      disarm(s);
+      s.notice ||= "Live disarmed after losing show state.";
+    }
     control.textContent = s.live ? "Switch to Monitor" : "Enable Live";
     control.classList.toggle("is-live", s.live);
-    control.disabled = !s.live && (!fresh || s.busy);
-    const connectionLabel = !s.data ? "Connecting" : !fresh ? "Reconnecting" : s.live ? "Live control" : "Monitor";
+    control.disabled = !s.live && (!fresh || Boolean(s.error) || s.busy);
+    const connectionLabel = !s.data ? "Connecting" : s.live ? (!fresh || s.error ? "Live paused" : "Live control") : !fresh || s.error ? "Reconnecting" : "Monitor";
     const detail = s.busy ? "Sending command…" : s.awaitingSync && fresh ? "Refreshing show state…" : [s.error, s.notice].filter(Boolean).join(" · ");
     const message = connectionLabel + (detail ? " · " + detail : "");
     if (status.textContent !== message) status.textContent = message;
@@ -313,22 +385,23 @@
 
   function playlist(s) {
     const selected = s.items.find(item => itemKey(item) === s.browsing);
-    const activePlaylist = uuid(s.data?.active.playlist);
-    const activeKey = s.playlistId === activePlaylist ? itemKey(s.data?.active.item) : "";
-    const isSelectedLive = selected && itemKey(selected) === activeKey;
+    const liveItem = activeRow(s);
+    const activeKey = itemKey(liveItem);
+    const isSelectedLive = Boolean(selected && selected === liveItem);
     const canTriggerItem = selected && Number.isInteger(id(selected)?.index) && ["presentation", "audio", "media", "livevideo"].includes(selected.type);
     const activeSlides = isSelectedLive && s.slides.get("active:" + s.browsing);
-    const activeId = uuid(s.data?.cursor?.presentation_id);
-    const canTriggerSlide = activeSlides && activeId && activeId.toLowerCase() === String(itemTarget(selected)).toLowerCase();
+    const canTriggerSlide = Boolean(activeSlideSet(s, selected)?.safeOrder);
     const slides = activeSlides?.slides || s.slides.get("browse:" + s.browsing)?.slides || [];
     const currentIndex = s.data?.cursor?.index;
     const selectedPanel = !selected ? "" : `<section class="slide-block stack"><h3>${escape(name(selected))}</h3>
       ${canTriggerItem ? row("Start playlist item", "item", itemKey(selected), "", "", "", !canSend(s)) : ""}
-      ${slides.map(slide => {
+      <div class="slide-grid">${slides.map(slide => {
         const current = activeSlides && slide.index === currentIndex;
         return row(slide.title, "slide", slide.index, slide.preview === slide.title ? "" : slide.preview,
           current ? "LIVE" : "", current ? "live-slide" : "", !canSend(s) || !canTriggerSlide || !slide.enabled);
-      }).join("")}
+      }).join("")}</div>
+      ${selected.type === "presentation" && !slides.length ? `<p class="muted">${escape(s.slideStatus.get(s.browsing) || "Loading slides…")}</p>` : ""}
+      ${slides.length && isSelectedLive && !canTriggerSlide ? '<p class="muted">Slide order could not be verified for live selection.</p>' : ""}
       ${slides.length && !isSelectedLive ? '<p class="muted">Start this item to take its individual slides live.</p>' : ""}
       </section>`;
     const picker = `<label class="playlist-picker">Browse playlist<select id="playlist-picker">
@@ -339,14 +412,14 @@
       </select></label>`;
     const title = s.selectedPlaylist ? s.catalog.find(entry => entry.key === s.selectedPlaylist)?.label || "Selected playlist"
       : name(s.data?.active.playlist) || "Active playlist";
-    return `${picker}<div class="rundown"><section class="stack"><h3>${escape(title)}</h3>
+    return `${picker}<div class="rundown inline-rundown"><section class="stack"><h3>${escape(title)}</h3>
       ${s.items.length ? s.items.map(item => {
         const key = itemKey(item);
         if (item.type === "header") return `<h3>${escape(name(item))}</h3>`;
         return row(name(item) || item.type, "browse", key, "", key === activeKey ? "LIVE" : "", key === s.browsing ? "selected" : "")
-          + (!wide.matches && key === s.browsing ? selectedPanel : "");
+          + (key === s.browsing ? selectedPanel : "");
       }).join("") : s.selectedPlaylist ? '<p class="muted">No playable items loaded for this playlist.</p>' : '<p class="muted">Select a playlist to browse, or trigger a cue at the booth to follow it.</p>'}
-      </section>${wide.matches ? selectedPanel : ""}</div>`;
+      </section></div>`;
   }
 
   function options(s) {
@@ -436,7 +509,7 @@
       try { localStorage.setItem("address", lastAddress); localStorage.setItem("remotePort", lastRemotePort); } catch (_) {}
       stop();
       session = {
-        address: lastAddress, remotePort, remotePassword, items: [], browsing: null, slides: new Map(),
+        address: lastAddress, remotePort, remotePassword, items: [], browsing: null, slides: new Map(), slideStatus: new Map(),
         catalog: [], selectedPlaylist: "",
         info: {}, infoAt: {}, verified: -Infinity, playlistAt: 0, live: false, busy: false,
         armGeneration: 0, notice: "", polling: false, awaitingSync: false
@@ -470,7 +543,7 @@
   control.addEventListener("click", () => {
     if (!session || settingsOpen) return;
     if (session.live) disarm(session);
-    else if (isFresh(session) && !session.busy && !document.hidden) {
+    else if (isFresh(session) && !session.error && !session.busy && !document.hidden) {
       session.live = true;
       session.notice = "";
     }
@@ -488,7 +561,6 @@
   });
   setInterval(() => {
     if (session?.live && !session.busy && !isFresh(session)) {
-      disarm(session);
       repaint();
     }
   }, 500);
@@ -529,6 +601,9 @@
       if (session.remotePassword) send(session, null, false, null, true);
       return true;
     },
+    actionContext() {
+      return session ? [session, session.armGeneration] : null;
+    },
     panelAction(action, value) {
       const s = session;
       if (!s) return settingsOpen;
@@ -554,10 +629,21 @@
         }
       } else if (action === "slide") {
         const index = Number(value);
-        if (Number.isInteger(index) && index >= 0 && s.playlistId === uuid(s.data?.active.playlist) && s.browsing === itemKey(s.data?.active.item)) {
-          send(s, "/v1/presentation/active/" + index + "/trigger", true);
+        const active = activeRow(s);
+        const cached = activeSlideSet(s, active);
+        if (active && s.browsing === itemKey(active) && cached?.safeOrder && cached.slides[index]?.enabled) {
+          send(s, "/v1/presentation/active/" + index + "/trigger", "presentation");
         }
-      } else if (Object.prototype.hasOwnProperty.call(endpoints, action)) send(s, endpoints[action]);
+      } else if (Object.prototype.hasOwnProperty.call(endpoints, action)) {
+        if (action === "show-prop" || action === "clear-prop") {
+          const prop = named(s.info.props).find(entry => uuid(entry) === value);
+          if (!prop || prop.is_active !== (action === "clear-prop")) {
+            announce("Prop state changed. Review it and tap again.");
+            return true;
+          }
+        }
+        send(s, endpoints[action]);
+      }
       return true;
     }
   };

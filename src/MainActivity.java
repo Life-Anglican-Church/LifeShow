@@ -1,6 +1,10 @@
 package com.showremote.demo;
 
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -27,6 +31,7 @@ import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
 
 public final class MainActivity extends Activity {
+    private static final String REPOSITORY = "Life-Anglican-Church/LifeShow";
     private static final String APP_URL = "file:///android_asset/index.html";
     private final ExecutorService network = Executors.newFixedThreadPool(3);
     private final OkHttpClient http = new OkHttpClient.Builder()
@@ -222,6 +227,52 @@ public final class MainActivity extends Activity {
         public void cancelLogo() {
             main.post(() -> {
                 if (logoCommand != null) logoCommand.cancel();
+            });
+        }
+
+        @JavascriptInterface
+        public void checkUpdates() {
+            network.execute(() -> {
+                String installed;
+                try {
+                    installed = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+                } catch (PackageManager.NameNotFoundException error) {
+                    return;
+                }
+                checkUpdateSource(installed, "release", "/releases?per_page=20");
+                checkUpdateSource(installed, "build", "/contents/builds");
+            });
+        }
+
+        private void checkUpdateSource(String installed, String kind, String endpoint) {
+            Request request = new Request.Builder().url("https://api.github.com/repos/" + REPOSITORY + endpoint)
+                .header("Accept", "application/vnd.github+json").build();
+            try (Response response = http.newCall(request).execute()) {
+                if (!response.isSuccessful() || response.body() == null) return;
+                String payload = response.body().string();
+                String callback = "window.receiveLifeShowUpdates(" + JSONObject.quote(installed) + ","
+                    + JSONObject.quote(kind) + "," + JSONObject.quote(payload) + ")";
+                runOnUiThread(() -> {
+                    if (!isDestroyed()) webView.evaluateJavascript(callback, null);
+                });
+            } catch (IOException ignored) {
+                // Startup and offline Demo remain available when GitHub cannot be reached.
+            }
+        }
+
+        @JavascriptInterface
+        public void openUpdate(String kind, String name) {
+            if (name == null || !name.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,100}")) return;
+            String path;
+            if ("release".equals(kind)) path = "/releases/tag/";
+            else if ("build".equals(kind)) path = "/blob/main/builds/";
+            else return;
+            runOnUiThread(() -> {
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/" + REPOSITORY + path + name)));
+                } catch (ActivityNotFoundException ignored) {
+                    // A device without a browser can continue using the app.
+                }
             });
         }
 
