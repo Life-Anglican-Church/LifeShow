@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#15110f">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; style-src 'self' file:; img-src 'self' file:; base-uri 'none'; form-action 'none'">
+<title>LifeShow</title>
+<link rel="stylesheet" href="style.css">
+<script defer src="app.js"></script>
+<script defer src="connection.js"></script>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <img class="wordmark" src="lifeshow-logo.png" alt="LifeShow">
+    <div class="header-actions">
+      <button id="control" hidden>Enable Live</button>
+      <button id="settings" aria-expanded="false">Connect</button>
+    </div>
+  </header>
+  <div class="cue-area">
+    <div id="connection-status" role="status" hidden></div>
+    <div class="cue">
+      <span id="cue-label">Current cue · Demo</span>
+      <strong id="cue-title"></strong>
+      <span id="live"></span>
+    </div>
+  </div>
+  <main id="panel" aria-labelledby="heading"></main>
+  <footer>
+    <div class="transport"><button id="back">‹ Previous</button><button id="next" class="primary"></button></div>
+    <div class="utility"><button id="logo-action">Clear to Logo</button></div>
+    <nav aria-label="Show controls" id="nav"></nav>
+  </footer>
+</div>
+<div id="feedback" role="status" aria-live="polite"></div>
+</body>
+</html>
