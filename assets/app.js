@@ -32,7 +32,6 @@ const nav = document.querySelector("#nav");
 const back = document.querySelector("#back");
 const next = document.querySelector("#next");
 const feedback = document.querySelector("#feedback");
-const wide = matchMedia("(min-width: 640px)");
 let feedbackTimer;
 
 function announce(message) {
@@ -53,7 +52,7 @@ function playlist() {
   const item = service[state.browsing];
   const slides = `<section class="slide-block" aria-label="Slides for ${item.title}">
     <h3>${item.title} · tap a slide to go live</h3>
-    <div class="stack">${cues.map((cue, index) => {
+    <div class="slide-grid">${cues.map((cue, index) => {
       if (cue.itemIndex !== state.browsing) return "";
       const isLive = !state.logo && index === state.position;
       const badge = isLive ? "LIVE" : index === state.position + 1 ? "UP NEXT" : "";
@@ -63,13 +62,13 @@ function playlist() {
       </button>`;
     }).join("")}</div>
   </section>`;
-  return `<div class="rundown"><div class="stack">${service.map((entry, index) => {
+  return `<div class="rundown inline-rundown"><div class="stack">${service.map((entry, index) => {
     const selected = state.browsing === index;
     return `<button class="card row ${selected ? "selected" : ""}" data-action="browse" data-value="${index}" aria-expanded="${selected}">
       <span>${entry.title}<small>${entry.slides.length} slides</small></span>
       <span class="badge ${!state.logo && index === live.itemIndex ? "live-badge" : ""}">${!state.logo && index === live.itemIndex ? "LIVE" : selected ? "OPEN" : ""}</span>
-    </button>${selected && !wide.matches ? slides : ""}`;
-  }).join("")}</div>${wide.matches ? slides : ""}</div>`;
+    </button>${selected ? slides : ""}`;
+  }).join("")}</div></div>`;
 }
 
 function tile(label, action, value, detail = "", pressed = null) {
@@ -181,5 +180,4 @@ panel.addEventListener("click", event => {
   }
   render();
 });
-wide.addEventListener("change", render);
 render();

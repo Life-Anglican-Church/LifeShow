@@ -5,6 +5,7 @@
   const logo = document.querySelector("#logo-action");
   const pending = new Map();
   const freshFor = 4500;
+  const liveGrace = 8000;
   let requestId = 0;
   let session = null;
   let settingsOpen = false;
@@ -32,7 +33,7 @@
   const equalId = (a, b) => Boolean(uuid(a)) && uuid(a).toLowerCase() === uuid(b).toLowerCase();
   const currentSession = s => session === s;
   const isFresh = s => Boolean(s.data) && performance.now() - s.verified < freshFor;
-  const canSend = s => s.live && !s.busy && !s.awaitingSync && !document.hidden && !settingsOpen && isFresh(s);
+  const canSend = s => s.live && !s.busy && !s.awaitingSync && !document.hidden && !settingsOpen && !s.error && isFresh(s);
   const itemKey = item => uuid(item) || String(id(item)?.index ?? "");
   const itemTarget = item => item?.presentation_info?.presentation_uuid || item?.target_uuid || uuid(item);
   const showTitle = text => String(text || "").split(/\r?\n/).find(line => line.trim())?.trim() || "";
@@ -129,9 +130,7 @@
       await Promise.all([refreshTab(s), refreshSlides(s), refreshCatalog(s)]);
     } catch (error) {
       if (currentSession(s)) {
-        disarm(s);
-        s.verified = -Infinity;
-        s.error = "Connection lost · " + error.message;
+        s.error = "Status check failed · " + error.message;
       }
     } finally {
       s.polling = false;
@@ -256,8 +255,8 @@
         }
         if (!currentSession(s) || arm !== s.armGeneration || !s.live || document.hidden) return;
         if (fingerprint(latest) !== expected || !sameItem) {
-          disarm(s);
-          s.notice = "Cue changed at the booth or playlist was edited · check Monitor before enabling Live.";
+          s.awaitingSync = true;
+          s.notice = "Cue or playlist changed · review it and tap again.";
           return;
         }
       }
@@ -270,11 +269,13 @@
       }
     } catch (error) {
       if (currentSession(s)) {
-        disarm(s);
-        s.verified = -Infinity;
-        s.notice = error.beforeSend ? error.message : dispatched
-          ? "Command outcome uncertain · check the booth before trying again."
-          : "Could not verify the current cue · check the connection.";
+        if (dispatched) {
+          disarm(s);
+          s.verified = -Infinity;
+          s.notice = error.beforeSend ? error.message : "Command outcome uncertain · check the booth before trying again.";
+        } else {
+          s.error = "Cue check failed · refreshing from ProPresenter.";
+        }
       }
     } finally {
       if (currentSession(s)) {
@@ -296,11 +297,14 @@
     status.hidden = !s;
     if (!s) return;
     const fresh = isFresh(s);
-    if (!fresh && s.live && !s.busy) disarm(s);
+    if (s.live && !s.busy && performance.now() - s.verified >= liveGrace) {
+      disarm(s);
+      s.notice ||= "Live disarmed after losing show state.";
+    }
     control.textContent = s.live ? "Switch to Monitor" : "Enable Live";
     control.classList.toggle("is-live", s.live);
-    control.disabled = !s.live && (!fresh || s.busy);
-    const connectionLabel = !s.data ? "Connecting" : !fresh ? "Reconnecting" : s.live ? "Live control" : "Monitor";
+    control.disabled = !s.live && (!fresh || Boolean(s.error) || s.busy);
+    const connectionLabel = !s.data ? "Connecting" : s.live ? (!fresh || s.error ? "Live paused" : "Live control") : !fresh || s.error ? "Reconnecting" : "Monitor";
     const detail = s.busy ? "Sending command…" : s.awaitingSync && fresh ? "Refreshing show state…" : [s.error, s.notice].filter(Boolean).join(" · ");
     const message = connectionLabel + (detail ? " · " + detail : "");
     if (status.textContent !== message) status.textContent = message;
@@ -324,11 +328,11 @@
     const currentIndex = s.data?.cursor?.index;
     const selectedPanel = !selected ? "" : `<section class="slide-block stack"><h3>${escape(name(selected))}</h3>
       ${canTriggerItem ? row("Start playlist item", "item", itemKey(selected), "", "", "", !canSend(s)) : ""}
-      ${slides.map(slide => {
+      <div class="slide-grid">${slides.map(slide => {
         const current = activeSlides && slide.index === currentIndex;
         return row(slide.title, "slide", slide.index, slide.preview === slide.title ? "" : slide.preview,
           current ? "LIVE" : "", current ? "live-slide" : "", !canSend(s) || !canTriggerSlide || !slide.enabled);
-      }).join("")}
+      }).join("")}</div>
       ${slides.length && !isSelectedLive ? '<p class="muted">Start this item to take its individual slides live.</p>' : ""}
       </section>`;
     const picker = `<label class="playlist-picker">Browse playlist<select id="playlist-picker">
@@ -339,14 +343,14 @@
       </select></label>`;
     const title = s.selectedPlaylist ? s.catalog.find(entry => entry.key === s.selectedPlaylist)?.label || "Selected playlist"
       : name(s.data?.active.playlist) || "Active playlist";
-    return `${picker}<div class="rundown"><section class="stack"><h3>${escape(title)}</h3>
+    return `${picker}<div class="rundown inline-rundown"><section class="stack"><h3>${escape(title)}</h3>
       ${s.items.length ? s.items.map(item => {
         const key = itemKey(item);
         if (item.type === "header") return `<h3>${escape(name(item))}</h3>`;
         return row(name(item) || item.type, "browse", key, "", key === activeKey ? "LIVE" : "", key === s.browsing ? "selected" : "")
-          + (!wide.matches && key === s.browsing ? selectedPanel : "");
+          + (key === s.browsing ? selectedPanel : "");
       }).join("") : s.selectedPlaylist ? '<p class="muted">No playable items loaded for this playlist.</p>' : '<p class="muted">Select a playlist to browse, or trigger a cue at the booth to follow it.</p>'}
-      </section>${wide.matches ? selectedPanel : ""}</div>`;
+      </section></div>`;
   }
 
   function options(s) {
@@ -470,7 +474,7 @@
   control.addEventListener("click", () => {
     if (!session || settingsOpen) return;
     if (session.live) disarm(session);
-    else if (isFresh(session) && !session.busy && !document.hidden) {
+    else if (isFresh(session) && !session.error && !session.busy && !document.hidden) {
       session.live = true;
       session.notice = "";
     }
@@ -488,7 +492,6 @@
   });
   setInterval(() => {
     if (session?.live && !session.busy && !isFresh(session)) {
-      disarm(session);
       repaint();
     }
   }, 500);
